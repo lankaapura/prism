@@ -1,0 +1,77 @@
+parameters:
+- name: env
+
+steps:
+    - download: current
+      artifact: drop
+
+    - task: CmdLine@2
+      displayName: 'Install dotnet mage tool'
+      inputs:
+        script: 'dotnet tool install --global microsoft.dotnet.mage --version 5.0.0'
+
+    - task: PowerShell@2
+      displayName: 'Update Variables'
+      inputs:
+        targetType: 'inline'
+        script: |
+              $config = "$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client\files\PrismClient.dll.config"
+              Write-Host "$config"
+              $xml = [xml](get-content $config)
+              Write-Host "$xml"
+              $env  = $xml.SelectSingleNode("//*[local-name()='setting'][@name='Env']/*[local-name()='value']");
+              $env.InnerText = "${{ parameters.env }}"
+              $xml.Save($config)  
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client'
+
+    - task: CmdLine@2
+      displayName: 'ClickOnce - Add Launcher'
+      inputs:
+        script: 'dotnet mage -al PrismClient.exe -td files'
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client'
+
+    - task: CmdLine@2
+      displayName: 'ClickOnce - Create application manifest'
+      inputs:
+        script: 'dotnet mage -new Application -t files\PrismClient.manifest -n "Prism App (${{ parameters.env }})" -fd files -v "1.0.0.$(Build.BuildId)"'
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client'
+
+    - task: CmdLine@2
+      displayName: 'ClickOnce - Create deployment manifest'
+      inputs:
+        script: 'dotnet mage -new Deployment -Install true -pub "Prism Tech" -n "Prism App (${{ parameters.env }})" -v "1.0.0.$(Build.BuildId)" -AppManifest files\PrismClient.manifest -t PrismClient.application -pu "https://prism-web-as-${{ parameters.env }}-ae.azurewebsites.net/client/PrismClient.application"'
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client'
+
+    - task: PowerShell@2
+      displayName: 'Change File Extension to .deploy'
+      inputs:
+        targetType: 'inline'
+        script: 'Get-ChildItem -File -Recurse -Exclude "*.manifest" | % { Rename-Item -Path $_.PSPath -NewName "$($_.Name).deploy" }'
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client\files'
+        
+    - task: PowerShell@2
+      displayName: 'Set mapFileExtensions'
+      inputs:
+        targetType: 'inline'
+        script: |
+              $applicationManifest = "$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client\PrismClient.application"
+              Write-Host "$applicationManifest"
+              $xml = [xml](get-content $applicationManifest)
+              Write-Host "$xml"
+              $deployment = $xml.SelectSingleNode("//*[local-name()='deployment']")
+              $mapFileExtensions = $xml.CreateAttribute("mapFileExtensions");
+              $mapFileExtensions.set_Value("true");
+
+              $deployment.SetAttributeNode($mapFileExtensions)
+              $xml.Save($applicationManifest)  
+        workingDirectory: '$(Pipeline.Workspace)\drop\PrismWeb\wwwroot\client'
+        
+    - task: AzureWebApp@1
+      displayName: 'Deploy Web'
+      inputs:
+        azureSubscription: 'LankapuraPAYG'
+        appType: 'webApp'
+        appName: 'prism-web-as-${{ parameters.env }}-ae'
+        package: '$(Pipeline.Workspace)/drop/PrismWeb'
+        deploymentMethod: 'auto'
+

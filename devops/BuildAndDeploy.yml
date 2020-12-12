@@ -1,0 +1,112 @@
+# ASP.NET
+# Build and test ASP.NET projects.
+# Add steps that publish symbols, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/apps/aspnet/build-aspnet-4
+
+trigger:
+- main
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+  releaseBranchName: 'main'
+
+schedules:
+- cron: '0 3 * * *'
+  displayName: Deploy every day at 3 A.M.
+  branches:
+    include:
+    - main
+  always: false 
+
+stages:
+- stage: 'Build'
+  displayName: 'Build'
+  jobs: 
+  - job: 'Build'
+    displayName: 'Build job'
+    pool:
+      vmImage: 'windows-latest'
+
+    steps:
+    - task: NuGetToolInstaller@1
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish Web'
+      inputs:
+        command: 'publish'
+        publishWebProjects: true
+        zipAfterPublish: false
+        arguments: '--configuration $(BuildConfiguration) --output $(Build.ArtifactStagingDirectory)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish Client'
+      inputs:
+        command: 'publish'
+        publishWebProjects: false
+        projects: '**/PrismClient.csproj'
+        arguments: '--configuration $(BuildConfiguration) --output $(Build.ArtifactStagingDirectory)\PrismWeb\wwwroot\client\files'
+        zipAfterPublish: false
+        modifyOutputPath: false
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+
+- stage: 'DEV'
+  displayName: 'Deploy to Dev'
+  dependsOn: Build
+  condition: |
+    and
+    (
+      succeeded(),
+      eq(variables['Build.SourceBranchName'], variables['releaseBranchName'])
+    )
+  jobs:
+  - deployment: Deploy
+    pool:
+      vmImage: 'windows-latest'
+    environment: DEV
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: DeployTemplate.yml
+            parameters:
+              env: 'DEV'
+
+- stage: 'SIT'
+  displayName: 'Deploy to SIT'
+  dependsOn: DEV
+  condition: or(eq(variables['Build.Reason'], 'Schedule'), eq(variables['Build.Reason'], 'Manual'))
+  jobs:
+  - deployment: Deploy
+    pool:
+      vmImage: 'windows-latest'
+    environment: SIT
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: DeployTemplate.yml
+            parameters:
+              env: 'SIT'
+
+- stage: 'STG'
+  displayName: 'Deploy to STG'
+  dependsOn: SIT
+  jobs:
+  - deployment: Deploy
+    pool:
+      vmImage: 'windows-latest'
+    environment: STG
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: DeployTemplate.yml
+            parameters:
+              env: 'STG'
